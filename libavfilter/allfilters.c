@@ -343,6 +343,7 @@ extern const AVFilter ff_vf_libplacebo;
 extern const AVFilter ff_vf_libvmaf;
 extern const AVFilter ff_vf_libvmaf_cuda;
 extern const AVFilter ff_vf_limitdiff;
+extern const AVFilter ff_vf_livepeer_dnn;
 extern const AVFilter ff_vf_limiter;
 extern const AVFilter ff_vf_loop;
 extern const AVFilter ff_vf_lumakey;
