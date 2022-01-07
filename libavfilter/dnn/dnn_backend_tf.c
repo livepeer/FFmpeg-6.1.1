@@ -33,7 +33,7 @@
 #include "dnn_io_proc.h"
 #include "dnn_backend_common.h"
 #include "safe_queue.h"
-#include <tensorflow/c/c_api.h>
+#include "compat/dnn/libtf_wrapper.h"
 
 typedef struct TFOptions{
     char *sess_config;
@@ -56,6 +56,8 @@ typedef struct TFModel{
     SafeQueue *request_queue;
     Queue *lltask_queue;
     Queue *task_queue;
+    void* libtensorflow;
+    TFFunctions* tffns;
 } TFModel;
 
 /**
@@ -216,7 +218,7 @@ static int extract_lltask_from_task(TaskItem *task, Queue *lltask_queue)
     return 0;
 }
 
-static TF_Buffer *read_graph(const char *model_filename)
+static TF_Buffer *read_graph(TFModel *tf_model, const char *model_filename)
 {
     TF_Buffer *graph_buf;
     unsigned char *graph_data = NULL;
@@ -241,15 +243,16 @@ static TF_Buffer *read_graph(const char *model_filename)
         return NULL;
     }
 
-    graph_buf = TF_NewBuffer();
-    graph_buf->data = graph_data;
+    graph_buf = tf_model->tffns->TF_NewBuffer();
+    graph_buf->data = (void *)graph_data;
+
     graph_buf->length = size;
     graph_buf->data_deallocator = free_buffer;
 
     return graph_buf;
 }
 
-static TF_Tensor *allocate_input_tensor(const DNNData *input)
+static TF_Tensor *allocate_input_tensor(TFModel *tf_model, const DNNData *input)
 {
     TF_DataType dt;
     size_t size;
@@ -267,7 +270,7 @@ static TF_Tensor *allocate_input_tensor(const DNNData *input)
         av_assert0(!"should not reach here");
     }
 
-    return TF_AllocateTensor(dt, input_dims, 4,
+    return tf_model->tffns->TF_AllocateTensor(dt, input_dims, 4,
                              input_dims[1] * input_dims[2] * input_dims[3] * size);
 }
 
@@ -280,14 +283,15 @@ static int get_input_tf(void *model, DNNData *input, const char *input_name)
     int64_t dims[4];
 
     TF_Output tf_output;
-    tf_output.oper = TF_GraphOperationByName(tf_model->graph, input_name);
+
+    tf_output.oper = tf_model->tffns->TF_GraphOperationByName(tf_model->graph, input_name);
     if (!tf_output.oper) {
         av_log(ctx, AV_LOG_ERROR, "Could not find \"%s\" in model\n", input_name);
         return AVERROR(EINVAL);
     }
 
     tf_output.index = 0;
-    dt = TF_OperationOutputType(tf_output);
+    dt = tf_model->tffns->TF_OperationOutputType(tf_output);
     switch (dt) {
     case TF_FLOAT:
         input->dt = DNN_FLOAT;
@@ -301,14 +305,14 @@ static int get_input_tf(void *model, DNNData *input, const char *input_name)
     }
     input->order = DCO_RGB;
 
-    status = TF_NewStatus();
-    TF_GraphGetTensorShape(tf_model->graph, tf_output, dims, 4, status);
-    if (TF_GetCode(status) != TF_OK){
-        TF_DeleteStatus(status);
+    status = tf_model->tffns->TF_NewStatus();
+    tf_model->tffns->TF_GraphGetTensorShape(tf_model->graph, tf_output, dims, 4, status);
+    if (tf_model->tffns->TF_GetCode(status) != TF_OK){
+        tf_model->tffns->TF_DeleteStatus(status);
         av_log(ctx, AV_LOG_ERROR, "Failed to get input tensor shape: number of dimension incorrect\n");
         return DNN_GENERIC_ERROR;
     }
-    TF_DeleteStatus(status);
+    tf_model->tffns->TF_DeleteStatus(status);
 
     // currently only NHWC is supported
     av_assert0(dims[0] == 1 || dims[0] == -1);
@@ -430,36 +434,39 @@ static int load_tf_model(TFModel *tf_model, const char *model_filename)
         }
     }
 
-    graph_def = read_graph(model_filename);
+    graph_def = read_graph(tf_model, model_filename);
     if (!graph_def){
         av_log(ctx, AV_LOG_ERROR, "Failed to read model \"%s\" graph\n", model_filename);
         av_freep(&sess_config);
         return AVERROR(EINVAL);
     }
-    tf_model->graph = TF_NewGraph();
-    tf_model->status = TF_NewStatus();
-    graph_opts = TF_NewImportGraphDefOptions();
+
+    tf_model->graph = tf_model->tffns->TF_NewGraph();
+    tf_model->status = tf_model->tffns->TF_NewStatus();
+    graph_opts = tf_model->tffns->TF_NewImportGraphDefOptions();
     if(tf_model->ctx.options.device_id != -1) {
         char sdevice[64] = {0,};
         sprintf(sdevice,"/gpu:%d", tf_model->ctx.options.device_id);
-        TF_ImportGraphDefOptionsSetDefaultDevice(graph_opts, sdevice);
+        tf_model->tffns->TF_ImportGraphDefOptionsSetDefaultDevice(graph_opts, sdevice);
     }
-    TF_GraphImportGraphDef(tf_model->graph, graph_def, graph_opts, tf_model->status);
-    TF_DeleteImportGraphDefOptions(graph_opts);
-    TF_DeleteBuffer(graph_def);
-    if (TF_GetCode(tf_model->status) != TF_OK){
+    tf_model->tffns->TF_GraphImportGraphDef(tf_model->graph, graph_def, graph_opts, tf_model->status);
+    tf_model->tffns->TF_DeleteImportGraphDefOptions(graph_opts);
+    tf_model->tffns->TF_DeleteBuffer(graph_def);
+    if (tf_model->tffns->TF_GetCode(tf_model->status) != TF_OK){
+        tf_model->tffns->TF_DeleteGraph(tf_model->graph);
+        tf_model->tffns->TF_DeleteStatus(tf_model->status);
         av_log(ctx, AV_LOG_ERROR, "Failed to import serialized graph to model graph\n");
         av_freep(&sess_config);
         return DNN_GENERIC_ERROR;
     }
 
-    init_op = TF_GraphOperationByName(tf_model->graph, "init");
-    sess_opts = TF_NewSessionOptions();
+    init_op = tf_model->tffns->TF_GraphOperationByName(tf_model->graph, "init");
+    sess_opts = tf_model->tffns->TF_NewSessionOptions();
 
     if (sess_config) {
-        TF_SetConfig(sess_opts, sess_config, sess_config_length,tf_model->status);
+        tf_model->tffns->TF_SetConfig(sess_opts, sess_config, sess_config_length,tf_model->status);
         av_freep(&sess_config);
-        if (TF_GetCode(tf_model->status) != TF_OK) {
+        if (tf_model->tffns->TF_GetCode(tf_model->status) != TF_OK) {
             TF_DeleteSessionOptions(sess_opts);
             av_log(ctx, AV_LOG_ERROR, "Failed to set config for sess options with %s\n",
                                       tf_model->ctx.options.sess_config);
@@ -467,9 +474,9 @@ static int load_tf_model(TFModel *tf_model, const char *model_filename)
         }
     }
 
-    tf_model->session = TF_NewSession(tf_model->graph, sess_opts, tf_model->status);
-    TF_DeleteSessionOptions(sess_opts);
-    if (TF_GetCode(tf_model->status) != TF_OK)
+    tf_model->session = tf_model->tffns->TF_NewSession(tf_model->graph, sess_opts, tf_model->status);
+    tf_model->tffns->TF_DeleteSessionOptions(sess_opts);
+    if (tf_model->tffns->TF_GetCode(tf_model->status) != TF_OK)
     {
         av_freep(&sess_config);
         av_log(ctx, AV_LOG_ERROR, "Failed to create new session with model graph\n");
@@ -478,11 +485,11 @@ static int load_tf_model(TFModel *tf_model, const char *model_filename)
 
     // Run initialization operation with name "init" if it is present in graph
     if (init_op){
-        TF_SessionRun(tf_model->session, NULL,
+        tf_model->tffns->TF_SessionRun(tf_model->session, NULL,
                       NULL, NULL, 0,
                       NULL, NULL, 0,
                       &init_op, 1, NULL, tf_model->status);
-        if (TF_GetCode(tf_model->status) != TF_OK)
+        if (tf_model->tffns->TF_GetCode(tf_model->status) != TF_OK)
         {
             av_freep(&sess_config);
             av_log(ctx, AV_LOG_ERROR, "Failed to run session when initializing\n");
@@ -520,15 +527,18 @@ static void dnn_free_model_tf(DNNModel **model)
         ff_queue_destroy(tf_model->task_queue);
 
         if (tf_model->graph){
-            TF_DeleteGraph(tf_model->graph);
+            tf_model->tffns->TF_DeleteGraph(tf_model->graph);
         }
         if (tf_model->session){
-            TF_CloseSession(tf_model->session, tf_model->status);
-            TF_DeleteSession(tf_model->session, tf_model->status);
+            tf_model->tffns->TF_CloseSession(tf_model->session, tf_model->status);
+            tf_model->tffns->TF_DeleteSession(tf_model->session, tf_model->status);
         }
         if (tf_model->status){
-            TF_DeleteStatus(tf_model->status);
+            tf_model->tffns->TF_DeleteStatus(tf_model->status);
         }
+        
+        av_freep(&tf_model->tffns);
+        TF_FREE_FUNC(tf_model->libtensorflow);        
         av_freep(&tf_model);
         av_freep(model);
     }
