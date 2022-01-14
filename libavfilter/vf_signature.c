@@ -630,7 +630,9 @@ static int binary_import(uint8_t *buffer, int fileLength, StreamContext *sc)
     int finesigncount = 0;
     BoundedCoarseSignature *bCoarseList;
 
-    init_get_bits(&bitContext, buffer, totalLength);
+    if (init_get_bits(&bitContext, buffer, totalLength)) {
+        return -1;
+    }
 
     // Skip the following data:
     // - NumOfSpatial Regions: (32 bits) only 1 supported
@@ -724,8 +726,14 @@ static int binary_import(uint8_t *buffer, int fileLength, StreamContext *sc)
     // CompressionFlag, only 0 supported
     skip_bits(&bitContext, 1);
 
+
     // Check lastindex for validity
     finesigncount = (totalLength - bitContext.index) / MPEG7_FINESIG_NBITS;
+    if (!finesigncount) {
+        av_free(sc->coarsesiglist);
+        av_free(bCoarseList);
+        return -1;
+    }
 
     if(sc->lastindex != finesigncount)
         sc->lastindex = finesigncount;
@@ -765,7 +773,10 @@ static int binary_import(uint8_t *buffer, int fileLength, StreamContext *sc)
         // Building fine signature list
         // First element prev should be NULL
         // Last element next should be NULL
-        if (i == 0) {
+        if (i == 0 && sc->lastindex == 1) {
+            fs->next = NULL;
+            fs->prev = NULL;
+        } else if (i == 0) {
             fs->next = &fs[1];
             fs->prev = NULL;
         }
