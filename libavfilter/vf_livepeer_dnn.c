@@ -24,6 +24,7 @@
  */
 
 #include "avfilter.h"
+#include "video.h"
 #include "formats.h"
 #include "internal.h"
 #include "libavutil/opt.h"
@@ -32,6 +33,8 @@
 #include "libavformat/avio.h"
 #include "libswscale/swscale.h"
 #include "dnn_filter_common.h"
+
+typedef enum {DNN_SUCCESS, DNN_ERROR} DNNReturnType;
 
 typedef struct LivepeerContext {
     const AVClass *class;
@@ -43,6 +46,7 @@ typedef struct LivepeerContext {
     FILE *logfile;       ///< (Optional) Log classification probabilities in this file
     char *log_filename;  ///< File name
 } LivepeerContext;
+
 
 #define OFFSET(x) offsetof(LivepeerContext, x)
 #define FLAGS AV_OPT_FLAG_FILTERING_PARAM | AV_OPT_FLAG_VIDEO_PARAM
@@ -57,7 +61,7 @@ static const AVOption livepeer_options[] = {
      OFFSET(dnnctx.model_filename), AV_OPT_TYPE_STRING, {.str=NULL}, 0, 0, FLAGS},
     {"input", "input name of the model", OFFSET(dnnctx.model_inputname), AV_OPT_TYPE_STRING, {.str = "x"}, 0, 0,
      FLAGS},
-    {"output", "output name of the model", OFFSET(dnnctx.model_outputname), AV_OPT_TYPE_STRING, {.str = "y"}, 0, 0,
+    {"output", "output name of the model", OFFSET(dnnctx.model_outputnames_string), AV_OPT_TYPE_STRING, {.str = "y"}, 0, 0,
      FLAGS},
     // default session_config = {allow_growth: true}
     {"backend_configs", "backend configs", OFFSET(dnnctx.backend_options), AV_OPT_TYPE_STRING,
@@ -68,9 +72,80 @@ static const AVOption livepeer_options[] = {
 
 AVFILTER_DEFINE_CLASS(livepeer);
 
-static int post_proc(AVFrame *out, DNNData *dnn_output, AVFilterContext *context);
+static int post_proc(AVFrame *out, DNNData *dnn_output, AVFilterContext *context)
+{
+    LivepeerContext *ctx = context->priv;
+    float *pfdata = dnn_output->data;
+    int lendata = dnn_output->height;
+    char slvpinfo[256] = {0,};
+    char tokeninfo[64] = {0,};
+    char topcatidx_str[8] = {0,};
+    char topcatprob_str[8] = {0,};
+    AVDictionary **metadata = &out->metadata;
 
-static int pre_proc(AVFrame *frame_in, DNNData *model_input, AVFilterContext *filter_ctx);
+    // need all inference probability as metadata
+    int topcatidx = -1;
+    float topcatprob = 0;
+    for (int i = 0; i < lendata; i++) {
+        if (pfdata[i] > topcatprob) {
+            topcatprob = pfdata[i];
+            topcatidx = i;
+        }
+        snprintf(tokeninfo, sizeof(tokeninfo), "%.5f,", pfdata[i]);
+        strcat(slvpinfo, tokeninfo);
+    }
+    snprintf(topcatprob_str, sizeof(topcatprob_str), "%.5f,", topcatprob);
+    snprintf(topcatidx_str, sizeof(topcatidx_str), "%d", topcatidx);
+
+    if (lendata > 0) {
+        av_dict_set(metadata, "lavfi.lvpdnn.text", slvpinfo, 0);
+        av_dict_set(metadata, "lavfi.lvpdnn.top_cat", topcatidx_str, 0);
+        av_dict_set(metadata, "lavfi.lvpdnn.top_prob", topcatprob_str, 0);
+        if (ctx->logfile != NULL) {
+            fprintf(ctx->logfile, "%s\n", slvpinfo);
+        }
+    }
+    return DNN_SUCCESS;
+}
+
+static int pre_proc(AVFrame *frame, DNNData *input, AVFilterContext *log_ctx)
+{
+    struct SwsContext *sws_ctx;
+    if (input->dt != DNN_FLOAT) {
+        avpriv_report_missing_feature(log_ctx, "data type rather than DNN_FLOAT");
+        return DNN_ERROR;
+    }
+
+    switch (frame->format) {
+        case AV_PIX_FMT_RGB24:
+            sws_ctx = sws_getContext(frame->width * 3,
+                                     frame->height,
+                                     AV_PIX_FMT_GRAY8,
+                                     frame->width * 3,
+                                     frame->height,
+                                     AV_PIX_FMT_GRAYF32,
+                                     0, NULL, NULL, NULL);
+            if (!sws_ctx) {
+                av_log(log_ctx, AV_LOG_ERROR, "Impossible to create scale context for the conversion "
+                                              "fmt:%s s:%dx%d -> fmt:%s s:%dx%d\n",
+                       av_get_pix_fmt_name(AV_PIX_FMT_GRAY8), frame->width * 3, frame->height,
+                       av_get_pix_fmt_name(AV_PIX_FMT_GRAYF32), frame->width * 3, frame->height);
+                return DNN_ERROR;
+            }
+            sws_scale(sws_ctx, (const uint8_t **) frame->data,
+                      frame->linesize, 0, frame->height,
+                      (uint8_t *const *) (&input->data),
+                      (const int[4]) {frame->width * 3 * sizeof(float), 0, 0, 0});
+            sws_freeContext(sws_ctx);
+            break;
+        default:
+            av_log(log_ctx, AV_LOG_ERROR, "Unsupported input pixel format for DNN, only RGB24 is supported\n");
+            return DNN_ERROR;
+    }
+
+    return DNN_SUCCESS;
+}
+
 
 static av_cold int init(AVFilterContext *context)
 {
@@ -96,15 +171,14 @@ static av_cold int init(AVFilterContext *context)
     // pre-executes the model and gets output information
     if (DNN_SUCCESS != ctx->dnnctx.model->get_output(ctx->dnnctx.model->model, ctx->dnnctx.model_inputname,
                                                      input.width, input.height,
-                                                     ctx->dnnctx.model_outputname,
+                                                     ctx->dnnctx.model_outputnames_string,
                                                      &ctx->output_width,
                                                      &ctx->output_height)) {
         av_log(ctx, AV_LOG_ERROR, "failed to init model\n");
         return AVERROR(EIO);
     }
 
-    ctx->dnnctx.model->pre_proc = pre_proc;
-    ctx->dnnctx.model->post_proc = post_proc;
+    ff_dnn_set_frame_proc(&ctx->dnnctx, pre_proc, post_proc);
 
     return ret;
 }
@@ -212,80 +286,6 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
     return ff_filter_frame(outlink, in);
 }
 
-static int post_proc(AVFrame *out, DNNData *dnn_output, AVFilterContext *context)
-{
-    LivepeerContext *ctx = context->priv;
-    float *pfdata = dnn_output->data;
-    int lendata = dnn_output->height;
-    char slvpinfo[256] = {0,};
-    char tokeninfo[64] = {0,};
-    char topcatidx_str[8] = {0,};
-    char topcatprob_str[8] = {0,};
-    AVDictionary **metadata = &out->metadata;
-
-    // need all inference probability as metadata
-    int topcatidx = -1;
-    float topcatprob = 0;
-    for (int i = 0; i < lendata; i++) {
-        if (pfdata[i] > topcatprob) {
-            topcatprob = pfdata[i];
-            topcatidx = i;
-        }
-        snprintf(tokeninfo, sizeof(tokeninfo), "%.5f,", pfdata[i]);
-        strcat(slvpinfo, tokeninfo);
-    }
-    snprintf(topcatprob_str, sizeof(topcatprob_str), "%.5f,", topcatprob);
-    snprintf(topcatidx_str, sizeof(topcatidx_str), "%d", topcatidx);
-
-    if (lendata > 0) {
-        av_dict_set(metadata, "lavfi.lvpdnn.text", slvpinfo, 0);
-        av_dict_set(metadata, "lavfi.lvpdnn.top_cat", topcatidx_str, 0);
-        av_dict_set(metadata, "lavfi.lvpdnn.top_prob", topcatprob_str, 0);
-        if (ctx->logfile != NULL) {
-            fprintf(ctx->logfile, "%s\n", slvpinfo);
-        }
-    }
-    return DNN_SUCCESS;
-}
-
-static int pre_proc(AVFrame *frame, DNNData *input, AVFilterContext *log_ctx)
-{
-    struct SwsContext *sws_ctx;
-    if (input->dt != DNN_FLOAT) {
-        avpriv_report_missing_feature(log_ctx, "data type rather than DNN_FLOAT");
-        return DNN_ERROR;
-    }
-
-    switch (frame->format) {
-        case AV_PIX_FMT_RGB24:
-            sws_ctx = sws_getContext(frame->width * 3,
-                                     frame->height,
-                                     AV_PIX_FMT_GRAY8,
-                                     frame->width * 3,
-                                     frame->height,
-                                     AV_PIX_FMT_GRAYF32,
-                                     0, NULL, NULL, NULL);
-            if (!sws_ctx) {
-                av_log(log_ctx, AV_LOG_ERROR, "Impossible to create scale context for the conversion "
-                                              "fmt:%s s:%dx%d -> fmt:%s s:%dx%d\n",
-                       av_get_pix_fmt_name(AV_PIX_FMT_GRAY8), frame->width * 3, frame->height,
-                       av_get_pix_fmt_name(AV_PIX_FMT_GRAYF32), frame->width * 3, frame->height);
-                return DNN_ERROR;
-            }
-            sws_scale(sws_ctx, (const uint8_t **) frame->data,
-                      frame->linesize, 0, frame->height,
-                      (uint8_t *const *) (&input->data),
-                      (const int[4]) {frame->width * 3 * sizeof(float), 0, 0, 0});
-            sws_freeContext(sws_ctx);
-            break;
-        default:
-            av_log(log_ctx, AV_LOG_ERROR, "Unsupported input pixel format for DNN, only RGB24 is supported\n");
-            return DNN_ERROR;
-    }
-
-    return DNN_SUCCESS;
-}
-
 static av_cold void uninit(AVFilterContext *context)
 {
     LivepeerContext *ctx = context->priv;
@@ -325,7 +325,7 @@ AVFilter ff_vf_livepeer_dnn = {
     .priv_size     = sizeof(LivepeerContext),
     .init          = init,
     .uninit        = uninit,
-    .query_formats = query_formats,
+    .formats = query_formats,
     .inputs        = livepeer_inputs,
     .outputs       = livepeer_outputs,
     .priv_class    = &livepeer_class,
