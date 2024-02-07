@@ -458,7 +458,7 @@ static const AVFilterPad cudasign_inputs[] = {
         .name        = "default",
         .type        = AVMEDIA_TYPE_VIDEO,
         .filter_frame = cudasign_filter_frame,
-        .get_video_buffer = get_pass_video_buffer,
+        .get_buffer.video = get_pass_video_buffer,
     },
     { NULL }
 };
@@ -472,13 +472,13 @@ static const AVFilterPad cudasign_outputs[] = {
     { NULL }
 };
 
-AVFilter ff_vf_signature_cuda = {
+const AVFilter ff_vf_signature_cuda = {
     .name      = "signature_cuda",
     .description = NULL_IF_CONFIG_SMALL("GPU accelerated video resizer"),
 
     .init          = cudasign_init,
     .uninit        = cudasign_uninit,
-    .query_formats = cudasign_query_formats,
+    FILTER_QUERY_FUNC(cudasign_query_formats),
 
     .priv_size = sizeof(CUDASignContext),
     .priv_class = &cudasign_class,
