@@ -21,6 +21,7 @@
 #include "video.h"
 #include "signature.h"
 #include "signature_lookup.c"
+#include "cuda/load_helper.h"
 
 #define DIV_UP(a, b) ( ((a) + (b) - 1) / (b) )
 #define BLOCKX 32
@@ -112,7 +113,9 @@ static av_cold int cudasign_config_props(AVFilterLink *outlink)
     enum AVPixelFormat in_format;
     StreamContext *sc;
 
-    extern char vf_signature_cuda_ptx[];
+    extern const unsigned char ff_vf_signature_cuda_ptx_data[];
+    extern const unsigned int ff_vf_signature_cuda_ptx_len;
+
     int ret;
 
     s->hwctx = device_hwctx;
@@ -122,7 +125,8 @@ static av_cold int cudasign_config_props(AVFilterLink *outlink)
     if (ret < 0)
         goto fail;
 
-    ret = CHECK_CU(cu->cuModuleLoadData(&s->cu_module, vf_signature_cuda_ptx));
+    ret = ff_cuda_load_module(ctx, s->hwctx, &s->cu_module,
+                              ff_vf_signature_cuda_ptx_data, ff_vf_signature_cuda_ptx_len);
     if (ret < 0)
         goto fail;
     
