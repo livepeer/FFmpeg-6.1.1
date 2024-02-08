@@ -10,6 +10,7 @@
 #include "libavutil/internal.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
+#include "libavutil/file_open.h"
 #include "libavcodec/put_bits.h"
 #include "libavcodec/get_bits.h"
 #include "libavformat/avformat.h"
