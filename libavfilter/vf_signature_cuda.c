@@ -345,6 +345,190 @@ fail:
     return ret;
 }
 
+static int xml_export(AVFilterContext *ctx, StreamContext *sc, const char* filename)
+{
+    FineSignature* fs;
+    CoarseSignature* cs;
+    int i, j;
+    FILE* f;
+    unsigned int pot3[5] = { 3*3*3*3, 3*3*3, 3*3, 3, 1 };
+
+    f = avpriv_fopen_utf8(filename, "w");
+    if (!f) {
+        int err = AVERROR(EINVAL);
+        char buf[128];
+        av_strerror(err, buf, sizeof(buf));
+        av_log(ctx, AV_LOG_ERROR, "cannot open xml file %s: %s\n", filename, buf);
+        return err;
+    }
+
+    /* header */
+    fprintf(f, "<?xml version='1.0' encoding='ASCII' ?>\n");
+    fprintf(f, "<Mpeg7 xmlns=\"urn:mpeg:mpeg7:schema:2001\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"urn:mpeg:mpeg7:schema:2001 schema/Mpeg7-2001.xsd\">\n");
+    fprintf(f, "  <DescriptionUnit xsi:type=\"DescriptorCollectionType\">\n");
+    fprintf(f, "    <Descriptor xsi:type=\"VideoSignatureType\">\n");
+    fprintf(f, "      <VideoSignatureRegion>\n");
+    fprintf(f, "        <VideoSignatureSpatialRegion>\n");
+    fprintf(f, "          <Pixel>0 0 </Pixel>\n");
+    fprintf(f, "          <Pixel>%d %d </Pixel>\n", sc->w - 1, sc->h - 1);
+    fprintf(f, "        </VideoSignatureSpatialRegion>\n");
+    fprintf(f, "        <StartFrameOfSpatialRegion>0</StartFrameOfSpatialRegion>\n");
+    /* hoping num is 1, other values are vague */
+    fprintf(f, "        <MediaTimeUnit>%d</MediaTimeUnit>\n", sc->time_base.den / sc->time_base.num);
+    fprintf(f, "        <MediaTimeOfSpatialRegion>\n");
+    fprintf(f, "          <StartMediaTimeOfSpatialRegion>0</StartMediaTimeOfSpatialRegion>\n");
+    fprintf(f, "          <EndMediaTimeOfSpatialRegion>%" PRIu64 "</EndMediaTimeOfSpatialRegion>\n", sc->coarseend->last->pts);
+    fprintf(f, "        </MediaTimeOfSpatialRegion>\n");
+
+    /* coarsesignatures */
+    for (cs = sc->coarsesiglist; cs; cs = cs->next) {
+        fprintf(f, "        <VSVideoSegment>\n");
+        fprintf(f, "          <StartFrameOfSegment>%" PRIu32 "</StartFrameOfSegment>\n", cs->first->index);
+        fprintf(f, "          <EndFrameOfSegment>%" PRIu32 "</EndFrameOfSegment>\n", cs->last->index);
+        fprintf(f, "          <MediaTimeOfSegment>\n");
+        fprintf(f, "            <StartMediaTimeOfSegment>%" PRIu64 "</StartMediaTimeOfSegment>\n", cs->first->pts);
+        fprintf(f, "            <EndMediaTimeOfSegment>%" PRIu64 "</EndMediaTimeOfSegment>\n", cs->last->pts);
+        fprintf(f, "          </MediaTimeOfSegment>\n");
+        for (i = 0; i < 5; i++) {
+            fprintf(f, "          <BagOfWords>");
+            for (j = 0; j < 31; j++) {
+                uint8_t n = cs->data[i][j];
+                if (j < 30) {
+                    fprintf(f, "%d  %d  %d  %d  %d  %d  %d  %d  ", (n & 0x80) >> 7,
+                                                                   (n & 0x40) >> 6,
+                                                                   (n & 0x20) >> 5,
+                                                                   (n & 0x10) >> 4,
+                                                                   (n & 0x08) >> 3,
+                                                                   (n & 0x04) >> 2,
+                                                                   (n & 0x02) >> 1,
+                                                                   (n & 0x01));
+                } else {
+                    /* print only 3 bit in last byte */
+                    fprintf(f, "%d  %d  %d ", (n & 0x80) >> 7,
+                                              (n & 0x40) >> 6,
+                                              (n & 0x20) >> 5);
+                }
+            }
+            fprintf(f, "</BagOfWords>\n");
+        }
+        fprintf(f, "        </VSVideoSegment>\n");
+    }
+
+    /* finesignatures */
+    for (fs = sc->finesiglist; fs; fs = fs->next) {
+        fprintf(f, "        <VideoFrame>\n");
+        fprintf(f, "          <MediaTimeOfFrame>%" PRIu64 "</MediaTimeOfFrame>\n", fs->pts);
+        /* confidence */
+        fprintf(f, "          <FrameConfidence>%d</FrameConfidence>\n", fs->confidence);
+        /* words */
+        fprintf(f, "          <Word>");
+        for (i = 0; i < 5; i++) {
+            fprintf(f, "%d ", fs->words[i]);
+            if (i < 4) {
+                fprintf(f, " ");
+            }
+        }
+        fprintf(f, "</Word>\n");
+        /* framesignature */
+        fprintf(f, "          <FrameSignature>");
+        for (i = 0; i< SIGELEM_SIZE/5; i++) {
+            if (i > 0) {
+                fprintf(f, " ");
+            }
+            fprintf(f, "%d ", fs->framesig[i] / pot3[0]);
+            for (j = 1; j < 5; j++)
+                fprintf(f, " %d ", fs->framesig[i] % pot3[j-1] / pot3[j] );
+        }
+        fprintf(f, "</FrameSignature>\n");
+        fprintf(f, "        </VideoFrame>\n");
+    }
+    fprintf(f, "      </VideoSignatureRegion>\n");
+    fprintf(f, "    </Descriptor>\n");
+    fprintf(f, "  </DescriptionUnit>\n");
+    fprintf(f, "</Mpeg7>\n");
+
+    fclose(f);
+    return 0;
+}
+
+static int binary_export(AVFilterContext *ctx, StreamContext *sc, const char* filename)
+{
+    FILE* f;
+    FineSignature* fs;
+    CoarseSignature* cs;
+    uint32_t numofsegments = (sc->lastindex + 44)/45;
+    int i, j;
+    PutBitContext buf;
+    /* buffer + header + coarsesignatures + finesignature */
+    int len = (512 + 6 * 32 + 3*16 + 2 +
+        numofsegments * (4*32 + 1 + 5*243) +
+        sc->lastindex * (2 + 32 + 6*8 + 608)) / 8;
+    uint8_t* buffer = av_malloc_array(len, sizeof(uint8_t));
+    if (!buffer)
+        return AVERROR(ENOMEM);
+
+    f = avpriv_fopen_utf8(filename, "wb");
+    if (!f) {
+        int err = AVERROR(EINVAL);
+        char buf[128];
+        av_strerror(err, buf, sizeof(buf));
+        av_log(ctx, AV_LOG_ERROR, "cannot open file %s: %s\n", filename, buf);
+        av_freep(&buffer);
+        return err;
+    }
+    init_put_bits(&buf, buffer, len);
+
+    put_bits32(&buf, 1); /* NumOfSpatial Regions, only 1 supported */
+    put_bits(&buf, 1, 1); /* SpatialLocationFlag, always the whole image */
+    put_bits32(&buf, 0); /* PixelX,1 PixelY,1, 0,0 */
+    put_bits(&buf, 16, sc->w-1 & 0xFFFF); /* PixelX,2 */
+    put_bits(&buf, 16, sc->h-1 & 0xFFFF); /* PixelY,2 */
+    put_bits32(&buf, 0); /* StartFrameOfSpatialRegion */
+    put_bits32(&buf, sc->lastindex); /* NumOfFrames */
+    /* hoping num is 1, other values are vague */
+    /* den/num might be greater than 16 bit, so cutting it */
+    put_bits(&buf, 16, 0xFFFF & (sc->time_base.den / sc->time_base.num)); /* MediaTimeUnit */
+    put_bits(&buf, 1, 1); /* MediaTimeFlagOfSpatialRegion */
+    put_bits32(&buf, 0); /* StartMediaTimeOfSpatialRegion */
+    put_bits32(&buf, 0xFFFFFFFF & sc->coarseend->last->pts); /* EndMediaTimeOfSpatialRegion */
+    put_bits32(&buf, numofsegments); /* NumOfSegments */
+    /* coarsesignatures */
+    for (cs = sc->coarsesiglist; cs; cs = cs->next) {
+        put_bits32(&buf, cs->first->index); /* StartFrameOfSegment */
+        put_bits32(&buf, cs->last->index); /* EndFrameOfSegment */
+        put_bits(&buf, 1, 1); /* MediaTimeFlagOfSegment */
+        put_bits32(&buf, 0xFFFFFFFF & cs->first->pts); /* StartMediaTimeOfSegment */
+        put_bits32(&buf, 0xFFFFFFFF & cs->last->pts); /* EndMediaTimeOfSegment */
+        for (i = 0; i < 5; i++) {
+            /* put 243 bits ( = 7 * 32 + 19 = 8 * 28 + 19) into buffer */
+            for (j = 0; j < 30; j++) {
+                put_bits(&buf, 8, cs->data[i][j]);
+            }
+            put_bits(&buf, 3, cs->data[i][30] >> 5);
+        }
+    }
+    /* finesignatures */
+    put_bits(&buf, 1, 0); /* CompressionFlag, only 0 supported */
+    for (fs = sc->finesiglist; fs; fs = fs->next) {
+        put_bits(&buf, 1, 1); /* MediaTimeFlagOfFrame */
+        put_bits32(&buf, 0xFFFFFFFF & fs->pts); /* MediaTimeOfFrame */
+        put_bits(&buf, 8, fs->confidence); /* FrameConfidence */
+        for (i = 0; i < 5; i++) {
+            put_bits(&buf, 8, fs->words[i]); /* Words */
+        }
+        /* framesignature */
+        for (i = 0; i < SIGELEM_SIZE/5; i++) {
+            put_bits(&buf, 8, fs->framesig[i]);
+        }
+    }
+
+    flush_put_bits(&buf);
+    fwrite(buffer, 1, put_bytes_output(&buf), f);
+    fclose(f);
+    av_freep(&buffer);
+    return 0;
+}
+
 static int export(AVFilterContext *ctx, StreamContext *sc, int input)
 {
     CUDASignContext* sic = ctx->priv;
