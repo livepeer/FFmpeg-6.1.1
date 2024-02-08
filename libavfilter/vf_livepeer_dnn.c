@@ -325,7 +325,7 @@ AVFilter ff_vf_livepeer_dnn = {
     .priv_size     = sizeof(LivepeerContext),
     .init          = init,
     .uninit        = uninit,
-    .formats = query_formats,
+    FILTER_QUERY_FUNC(query_formats),
     .inputs        = livepeer_inputs,
     .outputs       = livepeer_outputs,
     .priv_class    = &livepeer_class,
