@@ -2779,7 +2779,7 @@ int ff_nvenc_receive_packet(AVCodecContext *avctx, AVPacket *pkt)
         av_frame_unref(frame);
 
     if (output_ready(avctx, ctx->encoder_flushing)) {
-        av_fifo_read(ctx->output_surface_ready_queue, &tmp_out_surf, sizeof(tmp_out_surf));
+        av_fifo_read(ctx->output_surface_ready_queue, &tmp_out_surf, 1);
 
         res = nvenc_push_context(avctx);
         if (res < 0)
