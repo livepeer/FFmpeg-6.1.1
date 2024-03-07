@@ -1898,7 +1898,6 @@ EXTERNAL_LIBRARY_LIST="
     libsrt
     libssh
     libsvtav1
-    libtensorflow
     libtesseract
     libtheora
     libtwolame
@@ -1963,6 +1962,7 @@ HWACCEL_LIBRARY_LIST="
     mmal
     omx
     opencl
+    libtensorflow
 "
 
 DOCUMENT_LIST="
@@ -2776,7 +2776,7 @@ cbs_vp9_select="cbs"
 deflate_wrapper_deps="zlib"
 dirac_parse_select="golomb"
 dovi_rpu_select="golomb"
-dnn_suggest="libtensorflow libopenvino"
+dnn_suggest="libopenvino libdl LoadLibrary"
 dnn_deps="avformat swscale"
 error_resilience_select="me_cmp"
 evcparse_select="golomb"
@@ -3068,6 +3068,7 @@ vaapi_x11_deps="xlib_x11"
 videotoolbox_hwaccel_deps="videotoolbox pthreads"
 videotoolbox_hwaccel_extralibs="-framework QuartzCore"
 vulkan_deps_any="libdl LoadLibrary"
+libtensorflow_deps_any="libdl LoadLibrary"
 
 av1_d3d11va_hwaccel_deps="d3d11va DXVA_PicParams_AV1"
 av1_d3d11va_hwaccel_select="av1_decoder"
@@ -3779,6 +3780,7 @@ interlace_filter_deps="gpl"
 kerndeint_filter_deps="gpl"
 ladspa_filter_deps="ladspa libdl"
 lensfun_filter_deps="liblensfun version3"
+livepeer_dnn_filter_select="dnn"
 libplacebo_filter_deps="libplacebo vulkan"
 lv2_filter_deps="lv2"
 mcdeint_filter_deps="avcodec gpl"
@@ -3830,6 +3832,8 @@ sharpness_vaapi_filter_deps="vaapi"
 showcqt_filter_deps="avformat swscale"
 showcqt_filter_suggest="libfontconfig libfreetype"
 signature_filter_deps="gpl avcodec avformat"
+signature_cuda_filter_deps="ffnvcodec gpl avcodec avformat"
+signature_cuda_filter_deps_any="cuda_nvcc cuda_llvm gpl avcodec avformat"
 smartblur_filter_deps="gpl swscale"
 sobel_opencl_filter_deps="opencl"
 sofalizer_filter_deps="libmysofa"
@@ -4560,10 +4564,10 @@ fi
 
 if enabled cuda_nvcc; then
     nvcc_default="nvcc"
-    nvccflags_default="-gencode arch=compute_30,code=sm_30 -O2"
+    nvccflags_default="-gencode arch=compute_52,code=sm_52 -O2"
 else
     nvcc_default="clang"
-    nvccflags_default="--cuda-gpu-arch=sm_30 -O2"
+    nvccflags_default="--cuda-gpu-arch=sm_52 -O2"
     NVCC_C=""
 fi
 
@@ -6868,7 +6872,7 @@ enabled libssh            && require_pkg_config libssh "libssh >= 0.6.0" libssh/
 enabled libspeex          && require_pkg_config libspeex speex speex/speex.h speex_decoder_init
 enabled libsrt            && require_pkg_config libsrt "srt >= 1.3.0" srt/srt.h srt_socket
 enabled libsvtav1         && require_pkg_config libsvtav1 "SvtAv1Enc >= 0.9.0" EbSvtAv1Enc.h svt_av1_enc_init_handle
-enabled libtensorflow     && require libtensorflow tensorflow/c/c_api.h TF_Version -ltensorflow
+enabled libtensorflow     && require_headers "tensorflow/c/c_api.h"
 enabled libtesseract      && require_pkg_config libtesseract tesseract tesseract/capi.h TessBaseAPICreate
 enabled libtheora         && require libtheora theora/theoraenc.h th_info_init -ltheoraenc -ltheoradec -logg
 enabled libtls            && require_pkg_config libtls libtls tls.h tls_configure

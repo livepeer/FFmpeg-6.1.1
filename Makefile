@@ -151,6 +151,7 @@ libavutil/ffversion.h .version:
 -include .version
 
 install: install-libs install-headers
+	$(INSTALL) -m 644 config.h "$(INCDIR)"
 
 install-libs: install-libs-yes
 

@@ -17517,6 +17517,73 @@ lut2='if(lt(x,y),0,if(gt(x,y),pow(2,bdx)-1,pow(2,bdx-1))):if(lt(x,y),0,if(gt(x,y
 @end example
 @end itemize
 
+@section livepeer_dnn
+
+
+Apply convolutional neural network based methods on the input video to classify
+the overall scene, for example classifying input frames as Soccer or Adult content.
+Supported models: TensorFlow model files(.pb)
+
+The filter accepts the following options:
+
+@table @option
+@item dnn_backend
+Specify which DNN backend to use for model loading and execution. This option accepts
+the following values:
+
+@table @samp
+@item native
+Native implementation of DNN loading and execution. Native implementation is under testing, so tensorflow backend is recommended.
+
+@item tensorflow
+TensorFlow backend. To enable this backend you
+need to install the TensorFlow for C library (see
+@url{https://www.tensorflow.org/install/install_c}) and configure FFmpeg with
+@code{--enable-libtensorflow}
+@end table
+
+Default value is @samp{tensorflow}.
+
+@item backend_configs
+Set the configuration passed to the DNN backend. Useful to specify GPU ID for tensorflow backend.
+
+@item model
+Set path to model file specifying network architecture and its parameters.
+Note that different backends use different file formats. TensorFlow can load files for only its format.
+
+@item input
+Set the input name of the dnn network.
+
+@item output
+Set the output name of the dnn network.
+
+@item logfile
+Set the output log file path for save inference results.
+
+@end table
+
+@itemize
+@item
+Software transcoding for every 10th frame:
+@example
+ffmpeg -i input.mp4 -vf select='not(mod(n\,10))',livepeer_dnn=model=tasmodel.pb:input=input_1:output=reshape_3/Reshape:logfile=outlog.txt out.mp4
+@end example
+
+@item
+Hardware transcoding for every 10th frame:
+@example
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i input.mp4 -vf select='not(mod(n\,10))',hwdownload,format=pix_fmts=nv12,livepeer_dnn=model=tasmodel.pb:input=input_1:output=reshape_3/Reshape:logfile=outlog.txt -c:v h264_nvenc out.mp4
+@end example
+
+@item
+ffprobe example:
+@example
+ffprobe -show_entries frame_tags=lavfi.lvpdnn.text -f lavfi -i "movie=input.mp4,livepeer_dnn=model=tasmodel.pb:input=input_1:output=reshape_3/Reshape"
+@end example
+
+@end itemize
+
+
 @section maskedclamp
 
 Clamp the first input stream with the second input and third input stream.
@@ -22625,6 +22692,52 @@ To detect whether two videos match and store the signatures in XML format in
 signature0.xml and signature1.xml:
 @example
 ffmpeg -i input1.mkv -i input2.mkv -filter_complex "[0:v][1:v] signature=nb_inputs=2:detectmode=full:format=xml:filename=signature%d.xml" -map :v -f null -
+@end example
+
+@end itemize
+
+@anchor{signature_cuda}
+@section signature_cuda
+
+This is the CUDA variant of the @ref{signature} filter.
+It only accepts CUDA frames and can handle only one input.
+The filter always passes through the first input. The signature of a stream can
+be written into a file.
+
+It accepts the following options:
+
+@table @option
+
+@item filename
+Set the path to which the output is written.
+
+@item format
+Choose the output format.
+
+Available values are:
+
+@table @samp
+@item binary
+Use the specified binary representation (default).
+@item xml
+Use the specified xml representation.
+@end table
+
+@end table
+
+@subsection Examples
+
+@itemize
+@item
+To calculate the signature of an input video and store it in signature.bin:
+@example
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i input.mp4 -c:a copy -vf "scale_cuda=1280:720,signature_cuda=filename=signature.bin" -c:v h264_nvenc -b:v 5M output_720.mp4
+@end example
+
+@item
+To calculate the signature of an input video and store the signature as XML format:
+@example
+ffmpeg -hwaccel cuvid -c:v h264_cuvid -i input.mp4 -vf "scale_cuda=1280:720,signature_cuda=:format=xml:filename=signature.xml,hwdownload,format=nv12" output_720.mp4
 @end example
 
 @end itemize

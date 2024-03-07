@@ -368,6 +368,7 @@ OBJS-$(CONFIG_LIBVMAF_FILTER)                += vf_libvmaf.o framesync.o
 OBJS-$(CONFIG_LIBVMAF_CUDA_FILTER)           += vf_libvmaf.o framesync.o
 OBJS-$(CONFIG_LIMITDIFF_FILTER)              += vf_limitdiff.o framesync.o
 OBJS-$(CONFIG_LIMITER_FILTER)                += vf_limiter.o
+OBJS-$(CONFIG_LIVEPEER_DNN_FILTER)           += vf_livepeer_dnn.o
 OBJS-$(CONFIG_LOOP_FILTER)                   += f_loop.o
 OBJS-$(CONFIG_LUMAKEY_FILTER)                += vf_lumakey.o
 OBJS-$(CONFIG_LUT1D_FILTER)                  += vf_lut3d.o
@@ -492,6 +493,9 @@ OBJS-$(CONFIG_SHUFFLEPLANES_FILTER)          += vf_shuffleplanes.o
 OBJS-$(CONFIG_SIDEDATA_FILTER)               += f_sidedata.o
 OBJS-$(CONFIG_SIGNALSTATS_FILTER)            += vf_signalstats.o
 OBJS-$(CONFIG_SIGNATURE_FILTER)              += vf_signature.o
+OBJS-$(CONFIG_SIGNATURE_CUDA_FILTER)         += vf_signature_cuda.o \
+                                                vf_signature_cuda.ptx.o \
+                                                cuda/load_helper.o
 OBJS-$(CONFIG_SMARTBLUR_FILTER)              += vf_smartblur.o
 OBJS-$(CONFIG_SOBEL_FILTER)                  += vf_convolution.o
 OBJS-$(CONFIG_SOBEL_OPENCL_FILTER)           += vf_convolution_opencl.o opencl.o \
